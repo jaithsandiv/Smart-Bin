@@ -11,8 +11,7 @@ const char* password = "EqsV2.0$442##";       // Your WiFi Password
 const char* serverUrl = "https://wctsystem-backend.onrender.com"; // Your backend server URL (HTTPS)
 
 // !!! VERY IMPORTANT: Replace this with the actual MongoDB _id for THIS specific bin !!!
-const char* binId = "67f191afa78d4a9f39d17cc1";
-// Example: const char* binId = "67cbf9384d042a183ab3e09c";
+const char* binId = "68167bd9578b5cc6100b2f74";
 
 // HC-SR04 Pins (Using Option 1 - Right Side)
 const int trigPin = 23;
@@ -27,6 +26,7 @@ const float MAX_BIN_DEPTH_CM = 37.5; // Your specific bin depth in cm
 const unsigned long GPS_READ_TIMEOUT_MS = 1000; // How long to wait for GPS data in each loop cycle
 const unsigned long DATA_SEND_INTERVAL_MS = 60000; // Send data every 60 seconds
 const unsigned long ULTRASONIC_READ_INTERVAL_MS = 5000; // Read sensor every 5 seconds
+const unsigned long LOCATION_SEND_INTERVAL_MS = 18000000; // Send location every 5 hours (5 * 60 * 60 * 1000)
 
 // --- Global Variables ---
 WiFiClientSecure client; // Use secure client for HTTPS
@@ -36,13 +36,16 @@ float currentFillLevel = -1.0; // Use float for potential precision, -1 indicate
 float lastSentFillLevel = -1.0;
 unsigned long lastUltrasonicReadTime = 0;
 unsigned long lastDataSendTime = 0;
+unsigned long lastLocationSendTime = 0; // Track when location was last sent
 
 // --- Function Prototypes ---
 float getUltrasonicDistanceCm();
 float calculateFillLevel(float distanceCm);
 void connectWiFi();
 void sendDataToBackend(float fillLevel);
+void sendLocationToBackend();
 void displayGPSInfo();
+bool isGPSValid();
 
 // --- Setup Function ---
 void setup() {
@@ -83,6 +86,11 @@ void setup() {
 
   // Connect to WiFi
   connectWiFi();
+  
+  // Initialize timing variables
+  lastUltrasonicReadTime = 0;
+  lastDataSendTime = 0;
+  lastLocationSendTime = 0;
 
   Serial.println("Setup Complete. Entering loop...");
 }
@@ -117,18 +125,32 @@ void loop() {
     lastUltrasonicReadTime = currentTime;
   }
 
-  // --- Send Data to Backend periodically ---
+  // --- Send Fill Level Data to Backend periodically ---
   bool fillLevelChanged = abs(currentFillLevel - lastSentFillLevel) > 1.0; // Send if changed by > 1%
   bool intervalPassed = currentTime - lastDataSendTime >= DATA_SEND_INTERVAL_MS;
 
   if (currentFillLevel >= 0 && (fillLevelChanged || intervalPassed)) {
       Serial.println("----------------------------------------");
-      Serial.println("Preparing to send data...");
+      Serial.println("Preparing to send fill level data...");
       displayGPSInfo(); // Display current GPS info before sending (for debugging)
       sendDataToBackend(currentFillLevel);
       lastSentFillLevel = currentFillLevel; // Update last sent value
       lastDataSendTime = currentTime;       // Reset send timer
       Serial.println("----------------------------------------");
+  }
+  
+  // --- Send Location Data to Backend periodically (every 5 hours) ---
+  if (currentTime - lastLocationSendTime >= LOCATION_SEND_INTERVAL_MS) {
+      if (isGPSValid()) {
+          Serial.println("----------------------------------------");
+          Serial.println("Preparing to send location data...");
+          displayGPSInfo();
+          sendLocationToBackend();
+          lastLocationSendTime = currentTime; // Reset location send timer
+          Serial.println("----------------------------------------");
+      } else {
+          Serial.println("Cannot send location - waiting for valid GPS fix");
+      }
   }
 
   // Small delay
@@ -259,6 +281,78 @@ void sendDataToBackend(float fillLevel) {
   http.end();
 }
 
+// Send location data to the backend API via HTTPS
+void sendLocationToBackend() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi disconnected. Attempting to reconnect...");
+    connectWiFi();
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Reconnect failed. Skipping location update.");
+      return;
+    }
+  }
+
+  // Only send if we have valid GPS coordinates
+  if (!isGPSValid()) {
+    Serial.println("No valid GPS fix. Skipping location update.");
+    return;
+  }
+
+  String endpoint = String(serverUrl) + "/api/bins/direct-update";
+  Serial.print("Sending POST request to: ");
+  Serial.println(endpoint);
+
+  // Prepare JSON payload with location data in GeoJSON format
+  StaticJsonDocument<200> jsonDoc;
+  jsonDoc["binId"] = binId;
+  
+  // Create a nested "updates" object
+  JsonObject updates = jsonDoc.createNestedObject("updates");
+  
+  // Create a nested "location" object
+  JsonObject location = updates.createNestedObject("location");
+  location["type"] = "Point";
+  
+  // Create coordinates array [longitude, latitude]
+  JsonArray coordinates = location.createNestedArray("coordinates");
+  coordinates.add(gps.location.lng()); // Longitude first in GeoJSON
+  coordinates.add(gps.location.lat()); // Latitude second in GeoJSON
+
+  String requestBody;
+  serializeJson(jsonDoc, requestBody);
+  Serial.print("Request Body: ");
+  Serial.println(requestBody);
+
+  // Start the HTTPS request using the secure client
+  http.begin(client, endpoint); // Pass the WiFiClientSecure object
+  http.addHeader("Content-Type", "application/json");
+
+  // Send the POST request
+  int httpResponseCode = http.POST(requestBody);
+
+  // Check the response
+  if (httpResponseCode > 0) {
+    Serial.print("HTTP Response Code: ");
+    Serial.println(httpResponseCode);
+    String responsePayload = http.getString();
+    Serial.print("Response Payload: ");
+    Serial.println(responsePayload);
+
+    if (httpResponseCode == HTTP_CODE_OK || httpResponseCode == HTTP_CODE_CREATED) {
+        Serial.println("Location data sent successfully!");
+    } else {
+        Serial.print("Error sending location data. HTTP Status: ");
+        Serial.println(httpResponseCode);
+    }
+  } else {
+    Serial.print("HTTP Request failed. Error: ");
+    Serial.println(http.errorToString(httpResponseCode).c_str());
+  }
+
+  // End the connection
+  http.end();
+}
+
 // Helper function to display GPS info (for debugging)
 void displayGPSInfo() {
   Serial.print("GPS Status: ");
@@ -291,4 +385,14 @@ void displayGPSInfo() {
       Serial.print("N/A");
    }
    Serial.println(); // Newline after GPS info
+}
+
+// Check if GPS has a valid fix and coordinates
+bool isGPSValid() {
+  if (gps.location.isValid() && 
+      gps.location.lat() != 0.0 && 
+      gps.location.lng() != 0.0) {
+    return true;
+  }
+  return false;
 }
