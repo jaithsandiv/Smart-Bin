@@ -14,8 +14,10 @@ const char* serverUrl = "https://wctsystem-backend.onrender.com"; // Your backen
 const char* binId = "68167bd9578b5cc6100b2f74";
 
 // HC-SR04 Pins (Using Option 1 - Right Side)
-const int trigPin = 23;
-const int echoPin = 22; // Remember the voltage divider for this pin!
+//const int trigPin = 23;
+//const int echoPin = 22; // Remember the voltage divider for this pin!
+const int trigPin = 5;
+const int echoPin = 18;
 
 // NEO-6M GPS Pins (Using Serial Port 2 - Right Side)
 // RX2 = GPIO 16, TX2 = GPIO 17
@@ -57,9 +59,9 @@ void setup() {
   Serial.print("Max Bin Depth: ");
   Serial.print(MAX_BIN_DEPTH_CM);
   Serial.println(" cm");
-
   // Initialize HC-SR04 pins
   pinMode(trigPin, OUTPUT);
+  digitalWrite(trigPin, LOW); // Ensure initial state is LOW
   pinMode(echoPin, INPUT);
   Serial.println("HC-SR04 Pins Initialized (Trig: 23, Echo: 22).");
 
@@ -185,26 +187,55 @@ void connectWiFi() {
 
 // Get distance from HC-SR04 sensor
 float getUltrasonicDistanceCm() {
-  digitalWrite(trigPin, LOW);
-  delayMicroseconds(2);
-  digitalWrite(trigPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trigPin, LOW);
+  // Take multiple readings and average them for better reliability
+  float validReadingsSum = 0;
+  int validReadings = 0;
+  const int maxAttempts = 5;
+  
+  for (int i = 0; i < maxAttempts; i++) {
+    // Clear the trigger pin
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(5);
+    
+    // Send 10μs pulse to trigger pin
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
 
-  // Reads the echoPin, returns the sound wave travel time in microseconds
-  // Timeout after 30ms (prevents blocking if echo never received)
-  long duration = pulseIn(echoPin, HIGH, 30000);
+    // Reads the echoPin, returns the sound wave travel time in microseconds
+    // Timeout after 30ms (prevents blocking if echo never received)
+    long duration = pulseIn(echoPin, HIGH, 30000);
 
-  if (duration <= 0) {
-    Serial.println(" -> Ultrasonic pulseIn timeout or error.");
+    // Convert duration to distance
+    if (duration > 0) {
+      // Speed of sound = 343 m/s = 0.0343 cm/µs
+      // Distance = (Time * SpeedOfSound) / 2 (for round trip)
+      float distanceCm = (duration * 0.0343) / 2.0;
+      
+      // Filter out obviously erroneous readings
+      if (distanceCm > 1.0 && distanceCm <= (MAX_BIN_DEPTH_CM * 1.5)) {
+        validReadingsSum += distanceCm;
+        validReadings++;
+      }
+    }
+    
+    // Small delay between readings
+    delay(10);
+  }
+  
+  // Check if we got any valid readings
+  if (validReadings > 0) {
+    float averageDistance = validReadingsSum / validReadings;
+    Serial.print(" (Avg of ");
+    Serial.print(validReadings);
+    Serial.print("/");
+    Serial.print(maxAttempts);
+    Serial.print(" readings) ");
+    return averageDistance;
+  } else {
+    Serial.println(" -> Ultrasonic sensor error - no valid readings.");
     return -1.0; // Indicate error or timeout
   }
-
-  // Speed of sound = 343 m/s = 0.0343 cm/µs
-  // Distance = (Time * SpeedOfSound) / 2 (for round trip)
-  float distanceCm = (duration * 0.0343) / 2.0;
-
-  return distanceCm;
 }
 
 // Calculate fill level percentage (REVISED FUNCTION)
@@ -215,6 +246,15 @@ float calculateFillLevel(float distanceCm) {
     Serial.print(distanceCm);
     Serial.print("cm), assuming empty.");
     return 0.0; // Treat out-of-range readings as empty
+  }
+
+  // Sanity check for very small readings that are likely noise
+  // (Less than 1cm is typically not a valid reading for HC-SR04)
+  if (distanceCm < 1.0) {
+    Serial.print(" -> Suspiciously small reading (");
+    Serial.print(distanceCm);
+    Serial.print("cm), likely noise. Assuming maximum fill level.");
+    return 100.0; // Treat very small readings as full bin
   }
 
   // Calculate the raw fill percentage: ((Total Depth - Empty Space) / Total Depth) * 100
