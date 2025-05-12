@@ -11,7 +11,7 @@ const char* password = "EqsV2.0$442##";       // Your WiFi Password
 const char* serverUrl = "https://wctsystem-backend.onrender.com"; // Your backend server URL (HTTPS)
 
 // !!! VERY IMPORTANT: Replace this with the actual MongoDB _id for THIS specific bin !!!
-const char* binId = "68167bd9578b5cc6100b2f74";
+const char* binId = "6820b7479c017d4983fa1f82";
 
 // HC-SR04 Pins (Using Option 1 - Right Side)
 //const int trigPin = 23;
