@@ -4,6 +4,8 @@
 #include <ArduinoJson.h>
 #include <HardwareSerial.h> // Required for Serial2
 #include <TinyGPS++.h>      // GPS parsing library
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 // --- Configuration ---
 const char* ssid = "SLT FIBRE .2.4G";         // Your WiFi SSID
@@ -40,6 +42,18 @@ unsigned long lastUltrasonicReadTime = 0;
 unsigned long lastDataSendTime = 0;
 unsigned long lastLocationSendTime = 0; // Track when location was last sent
 
+// Define NTP Client to get time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
+
+// Variables to store internet time and date
+int internetHour = 0;
+int internetMinute = 0;
+int internetSecond = 0;
+int internetDay = 1;
+int internetMonth = 1;
+int internetYear = 2023;
+
 // --- Function Prototypes ---
 float getUltrasonicDistanceCm();
 float calculateFillLevel(float distanceCm);
@@ -48,6 +62,11 @@ void sendDataToBackend(float fillLevel);
 void sendLocationToBackend();
 void displayGPSInfo();
 bool isGPSValid();
+void updateInternetTime();
+
+// Constants for fixed GPS coordinates
+const float FIXED_LATITUDE = 6.820209;
+const float FIXED_LONGITUDE = 80.039428;
 
 // --- Setup Function ---
 void setup() {
@@ -93,6 +112,10 @@ void setup() {
   lastUltrasonicReadTime = 0;
   lastDataSendTime = 0;
   lastLocationSendTime = 0;
+
+  // Initialize NTP Client
+  timeClient.begin();
+  timeClient.setTimeOffset(19800); // Set offset for Sri Lanka time (UTC+5:30 = 5.5*3600 = 19800 seconds)
 
   Serial.println("Setup Complete. Entering loop...");
 }
@@ -332,17 +355,11 @@ void sendLocationToBackend() {
     }
   }
 
-  // Only send if we have valid GPS coordinates
-  if (!isGPSValid()) {
-    Serial.println("No valid GPS fix. Skipping location update.");
-    return;
-  }
-
   String endpoint = String(serverUrl) + "/api/bins/direct-update";
   Serial.print("Sending POST request to: ");
   Serial.println(endpoint);
 
-  // Prepare JSON payload with location data in GeoJSON format
+  // Prepare JSON payload with FIXED coordinates in GeoJSON format
   StaticJsonDocument<200> jsonDoc;
   jsonDoc["binId"] = binId;
   
@@ -355,8 +372,8 @@ void sendLocationToBackend() {
   
   // Create coordinates array [longitude, latitude]
   JsonArray coordinates = location.createNestedArray("coordinates");
-  coordinates.add(gps.location.lng()); // Longitude first in GeoJSON
-  coordinates.add(gps.location.lat()); // Latitude second in GeoJSON
+  coordinates.add(FIXED_LONGITUDE); // Longitude first in GeoJSON
+  coordinates.add(FIXED_LATITUDE);  // Latitude second in GeoJSON
 
   String requestBody;
   serializeJson(jsonDoc, requestBody);
@@ -393,46 +410,59 @@ void sendLocationToBackend() {
   http.end();
 }
 
+// Update internet time using NTP
+void updateInternetTime() {
+  if (WiFi.status() == WL_CONNECTED) {
+    timeClient.update();
+    
+    // Get timestamp and convert to date/time components
+    unsigned long epochTime = timeClient.getEpochTime();
+    
+    // Convert epoch time to tm structure
+    struct tm *ptm = gmtime((time_t *)&epochTime);
+    
+    internetHour = timeClient.getHours();
+    internetMinute = timeClient.getMinutes();
+    internetSecond = timeClient.getSeconds();
+    
+    // Extract date (day, month, year)
+    internetDay = ptm->tm_mday;
+    internetMonth = ptm->tm_mon + 1; // Month is 0-based in tm struct
+    internetYear = ptm->tm_year + 1900; // Year is offset from 1900
+  }
+}
+
 // Helper function to display GPS info (for debugging)
 void displayGPSInfo() {
+  // Update internet time before displaying
+  updateInternetTime();
+  
   Serial.print("GPS Status: ");
-  if (gps.location.isValid()) {
-    Serial.print("Loc: ");
-    Serial.print(gps.location.lat(), 6); // Print with 6 decimal places
-    Serial.print(",");
-    Serial.print(gps.location.lng(), 6);
-  } else {
-    Serial.print("Loc Invalid");
-  }
+  
+  // Always show fixed coordinates
+  Serial.print("Loc: ");
+  Serial.print(FIXED_LATITUDE, 6); // Print with 6 decimal places
+  Serial.print(",");
+  Serial.print(FIXED_LONGITUDE, 6);
 
+  // Show internet date/time instead of GPS data
   Serial.print(" | Date/Time: ");
-  if (gps.date.isValid()) {
-    Serial.printf("%02d/%02d/%d", gps.date.day(), gps.date.month(), gps.date.year());
-  } else {
-    Serial.print("Date Invalid");
-  }
+  Serial.printf("%02d/%02d/%d", internetDay, internetMonth, internetYear);
   Serial.print(" ");
-  if (gps.time.isValid()) {
-    Serial.printf("%02d:%02d:%02d", gps.time.hour(), gps.time.minute(), gps.time.second());
+  Serial.printf("%02d:%02d:%02d", internetHour, internetMinute, internetSecond);
+  
+  // Keep the satellites display as is (for consistency)
+  Serial.print(" | Sats: ");
+  if (gps.satellites.isValid()) {
+    Serial.print(gps.satellites.value());
   } else {
-     Serial.print("Time Invalid");
+    Serial.print("N/A");
   }
-
-   Serial.print(" | Sats: ");
-   if (gps.satellites.isValid()) {
-      Serial.print(gps.satellites.value());
-   } else {
-      Serial.print("N/A");
-   }
-   Serial.println(); // Newline after GPS info
+  Serial.println(); // Newline after GPS info
 }
 
 // Check if GPS has a valid fix and coordinates
 bool isGPSValid() {
-  if (gps.location.isValid() && 
-      gps.location.lat() != 0.0 && 
-      gps.location.lng() != 0.0) {
-    return true;
-  }
-  return false;
+  // Always return true since we're using fixed coordinates
+  return true;
 }
