@@ -305,9 +305,28 @@ void sendDataToBackend(float fillLevel) {
   Serial.print("Sending PUT request to: ");
   Serial.println(endpoint);
 
-  // Prepare JSON payload
-  StaticJsonDocument<100> jsonDoc;
+  // Update internet time before sending
+  updateInternetTime();
+
+  // Prepare JSON payload with both fill level and coordinates
+  StaticJsonDocument<300> jsonDoc; // Increased size to accommodate the additional location data
   jsonDoc["fillLevel"] = round(fillLevel); // Send rounded integer fill level
+
+  // Include location data in GeoJSON format
+  JsonObject location = jsonDoc.createNestedObject("location");
+  location["type"] = "Point";
+  
+  // Create coordinates array [longitude, latitude]
+  JsonArray coordinates = location.createNestedArray("coordinates");
+  coordinates.add(FIXED_LONGITUDE); // Longitude first in GeoJSON
+  coordinates.add(FIXED_LATITUDE);  // Latitude second in GeoJSON
+
+  // Add timestamp from internet time
+  char timestamp[25];
+  sprintf(timestamp, "%04d-%02d-%02dT%02d:%02d:%02dZ", 
+          internetYear, internetMonth, internetDay,
+          internetHour, internetMinute, internetSecond);
+  jsonDoc["timestamp"] = timestamp;
 
   String requestBody;
   serializeJson(jsonDoc, requestBody);
@@ -330,7 +349,7 @@ void sendDataToBackend(float fillLevel) {
     Serial.println(responsePayload);
 
     if (httpResponseCode == HTTP_CODE_OK || httpResponseCode == HTTP_CODE_NO_CONTENT || httpResponseCode == HTTP_CODE_CREATED) {
-        Serial.println("Data sent successfully!");
+        Serial.println("Data with location sent successfully!");
     } else {
         Serial.print("Error sending data. HTTP Status: ");
         Serial.println(httpResponseCode); // Will show 404, 500, etc.
